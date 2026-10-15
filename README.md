@@ -16,26 +16,28 @@ consulta de empresas e mapa societário.
 
 ## Instalação
 
-Requer Python 3.12+ e ~60 GB livres em disco durante a montagem do banco.
+📘 **Passo a passo completo para Windows (sem precisar programar): [INSTALACAO.md](INSTALACAO.md)**
+
+Resumo:
+
+1. Instale o Python 3.12+ e dê dois cliques em `instalar.bat`.
+2. Baixe os 37 `.zip` do mês mais recente em
+   <https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/> para uma pasta.
+3. Dê dois cliques em `montar_banco.bat` e informe essa pasta.
+4. Dê dois cliques em `Abrir Consulta CNPJ.bat`.
+
+Requer ~70 GB livres durante a montagem (~25 GB depois) e 8 GB de RAM (16 GB recomendado).
+
+### Linha de comando
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python build.py C:\caminho\dos\zips
 ```
 
-## Montar o banco
-
-1. Baixe os arquivos `.zip` em <https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/>
-   (Empresas, Estabelecimentos, Socios, Simples, Cnaes, Motivos, Municipios, Naturezas, Paises, Qualificacoes).
-2. Extraia cada `.zip` numa pasta com o mesmo nome (ex.: `Empresas0.zip` → `Empresas0\`).
-3. Rode:
-
-```powershell
-.venv\Scripts\python build.py C:\caminho\da\pasta\com\os\dados
-```
-
-O script converte os arquivos (Windows-1252 → UTF-8), importa tudo e gera `cnpj.duckdb`
-(~24 GB). Leva cerca de 40 minutos e usa até 5 GB de RAM.
+O `build.py` lê os `.zip` diretamente (ou pastas já extraídas), converte de Windows-1252 para
+UTF-8, importa tudo e gera `cnpj.duckdb` (~24 GB). Leva cerca de 40 minutos e usa até 5 GB de RAM.
 
 ## Usar
 

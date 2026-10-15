@@ -5,12 +5,15 @@ Uso: python build.py <pasta_dos_dados> [arquivo.duckdb]
 import sys
 import shutil
 import time
+import zipfile
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import duckdb
 
-DATA = Path(sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\Luan\Downloads\download")
+if len(sys.argv) < 2:
+    sys.exit(__doc__)
+DATA = Path(sys.argv[1])
 DB = Path(sys.argv[2] if len(sys.argv) > 2 else Path(__file__).with_name("cnpj.duckdb"))
 
 LAYOUTS = {
@@ -38,16 +41,43 @@ LOOKUPS = ["Cnaes", "Motivos", "Municipios", "Naturezas", "Paises", "Qualificaco
 UTF8 = DB.with_name("_utf8")
 
 
-def transcode(src):
+def convert(fi, dst):
     """Os arquivos da Receita vem em Windows-1252; o DuckDB le UTF-8 nativamente."""
-    dst = UTF8 / src.parent.name / src.name
-    if dst.exists() and dst.stat().st_size >= src.stat().st_size:
-        return src.parent.name + " (ja convertido)"
+    if dst.exists():
+        return
     dst.parent.mkdir(parents=True, exist_ok=True)
-    with open(src, "rb") as fi, open(dst, "wb") as fo:
+    part = dst.with_name(dst.name + ".part")
+    with open(part, "wb") as fo:
         while chunk := fi.read(64 << 20):
             fo.write(chunk.decode("cp1252", errors="replace").encode("utf-8"))
-    return src.parent.name
+    part.rename(dst)
+
+
+def transcode(src):
+    """Converte um .zip da Receita (sem extrair) ou um arquivo ja extraido."""
+    if src.suffix.lower() == ".zip":
+        with zipfile.ZipFile(src) as zf:
+            for member in zf.infolist():
+                if not member.is_dir():
+                    with zf.open(member) as fi:
+                        convert(fi, UTF8 / src.stem / Path(member.filename).name)
+        return src.name
+    with open(src, "rb") as fi:
+        convert(fi, UTF8 / src.parent.name / src.name)
+    return f"{src.parent.name}/{src.name}"
+
+
+def sources(glob):
+    """Arquivos de uma tabela: pastas ja extraidas ou, na falta delas, os .zip."""
+    found = []
+    for z in DATA.glob(glob + ".zip"):
+        folder = DATA / z.stem
+        if not (folder.is_dir() and any(folder.iterdir())):
+            found.append(z)
+    for d in DATA.glob(glob):
+        if d.is_dir():
+            found += [f for f in d.iterdir() if f.is_file()]
+    return found
 
 
 def csv(glob, cols):
@@ -69,10 +99,16 @@ def step(con, msg, sql):
 
 
 def main():
+    if not DATA.is_dir():
+        sys.exit(f"Pasta nao encontrada: {DATA}")
+    globs = LOOKUPS + [g for g, _ in LAYOUTS.values()]
+    files = [f for g in globs for f in sources(g)]
+    missing = [g for g in globs if not sources(g)]
+    if missing:
+        sys.exit(f"Arquivos nao encontrados em {DATA}: {', '.join(missing)}")
+
     t = time.time()
     print("-> convertendo arquivos para UTF-8...", flush=True)
-    globs = LOOKUPS + [g for g, _ in LAYOUTS.values()]
-    files = [f for g in globs for d in DATA.glob(g) if d.is_dir() for f in d.iterdir()]
     with ProcessPoolExecutor(8) as ex:
         for name in ex.map(transcode, files):
             print(f"   {name}", flush=True)

@@ -1,0 +1,4 @@
+duckdb>=1.5
+streamlit>=1.66
+pandas
+openpyxl

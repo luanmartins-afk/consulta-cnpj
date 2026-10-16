@@ -8,11 +8,12 @@ consulta de empresas e mapa societário.
 
 | Aba | O que faz |
 |---|---|
-| 🎯 Prospecção | Empresas ativas por UF, município, bairro, CEP, CNAE (principal/secundário), porte, regime, capital e data de abertura; exporta Excel/CSV |
+| 🎯 Prospecção | Empresas por situação cadastral, UF, município, bairro, CEP, CNAE (principal/secundário), porte, regime, capital e data de abertura; exporta Excel/CSV |
 | 🆕 Novos negócios | Empresas abertas nos últimos 7–365 dias por região e ramo |
 | 📊 Estudo de mercado | Ativas, baixadas, aberturas x fechamentos por ano, densidade por bairro/município/CEP/ramo |
 | 🔎 Consulta de empresa | Busca por CNPJ ou nome: situação, capital, porte, regime, CNAEs, filiais e sócios |
 | 🕸 Mapa societário | Todas as empresas em que uma pessoa é sócia, e os demais sócios de cada uma |
+| 💼 CRM | Funil em 4 passos: **1. Filtrar** (busca na base, contatos já vêm da Receita) → **2. Contato** (retornos, cobrança de quem não respondeu, qualificação) → **3. Proposta** (proposta e negociação) → **4. Retenção** (pós-venda). Ações em lote e histórico por lead. Fica em `crm.db` (SQLite), separado da base da Receita |
 
 ## Instalação
 

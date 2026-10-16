@@ -93,11 +93,12 @@ Para fechar, feche a janela preta que abriu junto.
 
 | Aba | Para quê |
 |---|---|
-| 🎯 Prospecção | Listar empresas ativas por região, ramo (CNAE), porte e data de abertura, com telefone e e-mail. Exporta para Excel. |
+| 🎯 Prospecção | Listar empresas (ativas, baixadas, inaptas...) por região, ramo (CNAE), porte e data de abertura, com telefone e e-mail. Exporta para Excel. |
 | 🆕 Novos negócios | Empresas recém-abertas — potenciais clientes de projeto, reforma e serviços. |
 | 📊 Estudo de mercado | Concorrência e densidade por bairro, aberturas x fechamentos por ano. |
 | 🔎 Consulta de empresa | Situação, capital, regime, filiais e sócios de um CNPJ. |
 | 🕸 Mapa societário | Todas as empresas em que uma pessoa é sócia. |
+| 💼 CRM | Acompanhar as vendas em 4 passos: **Filtrar** empresas da base → **Contato** (quem respondeu, quem cobrar) → **Proposta** → **Retenção** do cliente. |
 
 ---
 

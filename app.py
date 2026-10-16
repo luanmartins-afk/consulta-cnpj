@@ -4,12 +4,14 @@ Rodar: streamlit run app.py
 """
 import io
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 import streamlit as st
+
+import crm
 
 DB = Path(__file__).with_name("cnpj.duckdb")
 
@@ -108,7 +110,7 @@ def build_where(uf, cidades, bairro, cep, cnae_sel, cnae_sec, extra=None):
 
 
 RESULT_COLS = """
-    e.cnpj, e.razao_social, e.nome_fantasia, e.situacao, e.data_inicio, e.porte,
+    e.cnpj, e.razao_social, e.nome_fantasia, e.situacao, e.data_situacao, e.data_inicio, e.porte,
     e.capital_social, e.simples, e.mei, e.matriz_filial,
     e.cnae_principal, c.descricao AS cnae_descricao,
     trim(concat_ws(' ', e.tipo_logradouro, e.logradouro, e.numero, e.complemento)) AS endereco,
@@ -148,16 +150,49 @@ def downloads(df, name):
     c2.download_button("⬇ Excel", buf.getvalue(), f"{name}.xlsx", key=f"{name}_xlsx")
 
 
+def show_results(key, name, origem):
+    """Mostra o ultimo resultado da busca (guardado na sessao) com selecao de linhas para enviar ao CRM."""
+    res = st.session_state.get(f"{key}_res")
+    if res is None:
+        return None
+    msg, df = res
+    st.success(msg)
+    if aviso := st.session_state.pop(f"{key}_aviso", None):
+        st.toast(aviso, icon="✅")
+    no_crm = crm.etapas_por_cnpj()
+    view = df.copy()
+    view.insert(0, "crm", view["cnpj"].map(lambda c: no_crm.get(digits(c), "")))
+    ev = st.dataframe(view, width="stretch", hide_index=True, on_select="rerun", selection_mode="multi-row",
+                      key=f"{key}_tbl", column_config={"crm": st.column_config.TextColumn("CRM", width="small")})
+    rows = ev.selection.rows
+    c1, c2 = st.columns([1, 2])
+    rotulo = f"➕ Adicionar {len(rows)} selecionada(s) ao CRM" if rows else f"➕ Adicionar todas ({len(df)}) ao CRM"
+    if c1.button(rotulo, key=f"{key}_crm"):
+        lote = df.iloc[rows] if rows else df
+        n = crm.adicionar_empresas(lote, origem)
+        st.session_state[f"{key}_aviso"] = (f"{n} lead(s) novo(s) no CRM"
+                                            + (f" · {len(lote) - n} já estavam lá" if len(lote) > n else ""))
+        st.session_state.crm_v = st.session_state.get("crm_v", 0) + 1
+        st.rerun()
+    c2.caption("Clique na caixa à esquerda das linhas para selecionar. Sem seleção, envia todas.")
+    downloads(df, name)
+    return df
+
+
 def common_extra_filters(key):
     c1, c2, c3, c4 = st.columns(4)
     porte = c1.multiselect("Porte", list(PORTE), format_func=PORTE.get, key=f"{key}_porte",
                            placeholder="Todos")
+    situacao = c1.multiselect("Situação cadastral", list(SITUACAO), default=["02"], format_func=SITUACAO.get,
+                              key=f"{key}_sit", placeholder="Todas")
     regime = c2.selectbox("Regime", ["Todos", "Excluir MEI", "Só MEI", "Só Simples (sem MEI)"],
                           key=f"{key}_regime")
     contato = c3.multiselect("Exigir contato", ["Telefone", "E-mail"], key=f"{key}_contato")
     matriz = c4.checkbox("Só matriz", key=f"{key}_matriz")
     capital = c4.number_input("Capital social mínimo (R$)", min_value=0, step=10000, key=f"{key}_cap")
     extra = []
+    if situacao:
+        extra.append(("list_contains(?::VARCHAR[], e.situacao)", situacao))
     if porte:
         extra.append(("list_contains(?::VARCHAR[], e.porte)", porte))
     if regime == "Excluir MEI":
@@ -180,27 +215,30 @@ def common_extra_filters(key):
 # ---------- abas ----------
 
 def tab_prospeccao():
-    st.caption("Empresas **ativas** filtradas por região, ramo, porte e data de abertura, com telefone e e-mail.")
-    loc = location_filters("p")
-    cnae_sel, sec = cnae_filter("p")
-    extra = common_extra_filters("p")
+    st.caption("Empresas filtradas por situação, região, ramo, porte e data de abertura, com telefone e e-mail.")
+    prospeccao("p", "prospeccao", "Prospecção")
+
+
+def prospeccao(key, name, origem):
+    loc = location_filters(key)
+    cnae_sel, sec = cnae_filter(key)
+    extra = common_extra_filters(key)
     c1, c2, c3 = st.columns([1, 1, 1])
-    ini = c1.date_input("Aberta a partir de", value=None, format="DD/MM/YYYY", key="p_ini")
-    fim = c2.date_input("Aberta até", value=None, format="DD/MM/YYYY", key="p_fim")
-    limit = c3.number_input("Máx. de linhas", 100, 200_000, 5_000, step=1000, key="p_lim")
-    extra.append(("e.situacao = '02'",))
+    ini = c1.date_input("Aberta a partir de", value=None, format="DD/MM/YYYY", key=f"{key}_ini")
+    fim = c2.date_input("Aberta até", value=None, format="DD/MM/YYYY", key=f"{key}_fim")
+    limit = c3.number_input("Máx. de linhas", 100, 200_000, 5_000, step=1000, key=f"{key}_lim")
     if ini:
         extra.append(("e.data_inicio >= ?", ini))
     if fim:
         extra.append(("e.data_inicio <= ?", fim))
-    if st.button("Buscar", type="primary", key="p_go"):
+    if st.button("Buscar", type="primary", key=f"{key}_go"):
         where, params = build_where(*loc, cnae_sel, sec, extra)
         with st.spinner("Consultando..."):
             total, df = run_search(where, params, limit)
-        st.success(f"{total:,} empresas encontradas".replace(",", ".")
-                   + (f" — mostrando as {len(df):,} mais recentes".replace(",", ".") if total > len(df) else ""))
-        st.dataframe(df, width="stretch", hide_index=True)
-        downloads(df, "prospeccao")
+        st.session_state[f"{key}_res"] = (f"{total:,} empresas encontradas".replace(",", ".")
+                                          + (f" — mostrando as {len(df):,} mais recentes".replace(",", ".")
+                                             if total > len(df) else ""), df)
+    show_results(key, name, origem)
 
 
 def tab_novos():
@@ -214,17 +252,17 @@ def tab_novos():
     limit = c2.number_input("Máx. de linhas", 100, 200_000, 5_000, step=1000, key="n_lim")
     ref = q("SELECT max(data_inicio) d FROM estabelecimentos WHERE data_inicio <= current_date")["d"][0]
     st.caption(f"Data mais recente na base: **{ref:%d/%m/%Y}** — o período é contado a partir dela.")
-    extra += [("e.situacao = '02'",), ("e.data_inicio >= ?", ref - timedelta(days=dias))]
+    extra.append(("e.data_inicio >= ?", ref - timedelta(days=dias)))
     if st.button("Buscar", type="primary", key="n_go"):
         where, params = build_where(*loc, cnae_sel, sec, extra)
         with st.spinner("Consultando..."):
             total, df = run_search(where, params, limit)
-        st.success(f"{total:,} empresas abertas no período".replace(",", "."))
-        if not df.empty:
-            st.bar_chart(df.groupby("cnae_descricao").size().sort_values(ascending=False).head(15),
-                         horizontal=True)
-        st.dataframe(df, width="stretch", hide_index=True)
-        downloads(df, "novos_negocios")
+        st.session_state.n_res = (f"{total:,} empresas abertas no período".replace(",", "."), df)
+    res = st.session_state.get("n_res")
+    if res is not None and not res[1].empty:
+        st.bar_chart(res[1].groupby("cnae_descricao").size().sort_values(ascending=False).head(15),
+                     horizontal=True)
+    show_results("n", "novos_negocios", "Novos negócios")
 
 
 def tab_mercado():
@@ -293,6 +331,12 @@ def show_empresa(basico):
     st.subheader(r.razao_social)
     if r.nome_fantasia:
         st.caption(r.nome_fantasia)
+    etapa = crm.etapas_por_cnpj().get(emp.cnpj[0])
+    if etapa:
+        st.info(f"Já está no CRM — etapa **{etapa}**.")
+    elif st.button("➕ Adicionar ao CRM", key=f"c_crm_{basico}"):
+        crm.adicionar_empresas(emp.head(1), "Consulta de empresa")
+        st.rerun()
     k = st.columns(5)
     k[0].metric("Situação (matriz)", r.situacao)
     k[1].metric("Abertura", f"{r.data_inicio:%d/%m/%Y}" if pd.notna(r.data_inicio) else "-")
@@ -398,6 +442,237 @@ def tab_socios():
     st.dataframe(socios_de(df.cnpj_basico[escolha]), width="stretch", hide_index=True)
 
 
+# ---------- CRM ----------
+
+def brl(v):
+    v = 0 if v is None or pd.isna(v) else v
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def txt(v):
+    return "" if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v)
+
+
+def crm_salvo(msg):
+    """Depois de gravar: avisa, limpa as selecoes das tabelas (os indices mudam) e recarrega."""
+    st.session_state.crm_aviso = msg
+    st.session_state.crm_v = st.session_state.get("crm_v", 0) + 1
+    st.rerun()
+
+
+def situacao(r, hoje, dias):
+    """O que fazer com o lead agora, e a prioridade (menor = mais urgente)."""
+    if r.etapa == crm.PERDIDO:
+        return "", 9
+    if r.responder:
+        return "⬅ Respondeu — responder", 0
+    if pd.notna(r.proximo_contato):
+        d = (r.proximo_contato - hoje).days
+        if d < 0:
+            return f"🔴 Follow-up atrasado {-d} dia(s)", 1
+        if d == 0:
+            return "🟡 Follow-up hoje", 2
+    if r.etapa == "Contatado" and pd.notna(r.ultimo_contato):
+        espera = (hoje - r.ultimo_contato.normalize()).days
+        if espera >= dias:
+            return f"⏳ Sem retorno há {espera} dias — cobrar", 3
+        return f"Aguardando retorno ({espera} dia(s))", 5
+    if pd.notna(r.proximo_contato):
+        return f"📅 {r.proximo_contato:%d/%m/%Y}", 4
+    return "", 6
+
+
+def tab_crm():
+    df = crm.leads()
+    if aviso := st.session_state.pop("crm_aviso", None):
+        st.toast(aviso, icon="✅")
+    hoje = pd.Timestamp(date.today())
+    dias = st.session_state.get("crm_dias", 3)
+    sit = [situacao(r, hoje, dias) for r in df.itertuples()]
+    df["situacao"] = [s for s, _ in sit]
+    df["prioridade"] = [p for _, p in sit]
+
+    k = st.columns(len(crm.FUNIL) + 1)
+    for i, (passo, etapas) in enumerate(crm.FUNIL.items()):
+        g = df[df.etapa.isin(etapas)]
+        k[i].metric(f"{i + 1}. {passo}", len(g), help=crm.DESCRICAO_FUNIL[passo])
+    ganhos, perdidos = df.etapa.isin(crm.GANHAS).sum(), (df.etapa == crm.PERDIDO).sum()
+    k[-1].metric("Conversão", f"{ganhos / (ganhos + perdidos):.0%}" if ganhos + perdidos else "-",
+                 help=f"Clientes ÷ (clientes + perdidos). Perdidos: {perdidos}")
+    a = st.columns(len(crm.FUNIL) + 1)
+    a[0].metric("⬅ Retornos para responder", int(df.responder.sum()))
+    a[1].metric("🔴 Follow-ups hoje/atrasados", int(df.prioridade.isin([1, 2]).sum()))
+    a[2].metric(f"⏳ Sem retorno há {dias}+ dias", int((df.prioridade == 3).sum()))
+    a[3].metric("Em proposta", brl(df[df.etapa.isin(crm.FUNIL["Proposta"])].valor.sum()))
+    a[4].metric("Clientes (valor)", brl(df[df.etapa.isin(crm.GANHAS)].valor.sum()))
+
+    nomes = [f"{i + 1}. {p}" for i, p in enumerate(crm.FUNIL)]
+    sub = st.tabs(nomes + ["📇 Todos"])
+    for aba, passo in zip(sub, crm.FUNIL):
+        with aba:
+            crm_passo(df, passo)
+    with sub[-1]:
+        crm_passo(df, None)
+
+
+def crm_passo(df, passo):
+    key = f"crm_{passo or 'todos'}"
+    etapas = crm.FUNIL[passo] if passo else crm.ETAPAS
+    st.caption(crm.DESCRICAO_FUNIL[passo] if passo else "Todos os leads do CRM, inclusive os perdidos.")
+    f = df[df.etapa.isin(etapas)]
+    if passo == "Filtrar":
+        with st.expander("🔍 Filtrar empresas na base e trazer para o CRM", expanded=f.empty):
+            st.caption("Os contatos (telefone, e-mail) já vêm da base da Receita. Selecione as empresas e clique em "
+                       "**Adicionar ao CRM**. Depois de falar com elas, registre o contato: elas passam para 2. Contato.")
+            prospeccao("f", "crm_filtro", "CRM · Filtrar")
+    elif passo == "Contato":
+        st.number_input("Cobrar retorno depois de quantos dias sem resposta?", 1, 60, 3, key="crm_dias",
+                        width=320)
+    if f.empty:
+        st.info("Nenhum lead neste passo.")
+        return
+    c1, c2, c3 = st.columns([3, 3, 1])
+    busca = c1.text_input("Buscar", key=f"{key}_busca", placeholder="Nome, CNPJ, contato, cidade, e-mail").strip()
+    sel = c2.multiselect("Etapa", etapas, key=f"{key}_etapas", placeholder="Todas")
+    so_pendentes = c3.checkbox("Só pendências", key=f"{key}_pend",
+                               help="Retornos para responder, follow-ups vencidos e contatos sem retorno")
+    if busca:
+        texto = f[["razao_social", "nome_fantasia", "contato", "municipio", "email", "telefone", "ramo"]] \
+            .fillna("").agg(" ".join, axis=1).str.lower()
+        mask = texto.str.contains(busca.lower(), regex=False)
+        if digits(busca):
+            mask |= f.cnpj.fillna("").str.contains(digits(busca), regex=False)
+        f = f[mask]
+    if sel:
+        f = f[f.etapa.isin(sel)]
+    if so_pendentes:
+        f = f[f.prioridade <= 3]
+    f = f.sort_values(["prioridade", "proximo_contato", "atualizado_em"], ascending=[True, True, False])
+    st.caption(f"{len(f)} lead(s)")
+    lead_table(f.reset_index(drop=True), key)
+
+
+LEAD_COLS = {"situacao": "O que fazer", "nome": "Empresa", "etapa": "Etapa", "valor": "Valor",
+             "contato": "Contato", "telefone": "Telefone", "email": "E-mail", "municipio": "Município",
+             "uf": "UF", "ramo": "Ramo", "proximo_contato": "Próximo contato", "ultimo_contato": "Último contato",
+             "ultimo_retorno": "Último retorno", "responsavel": "Responsável", "cnpj": "CNPJ", "origem": "Origem"}
+
+
+def lead_table(df, key):
+    view = df.assign(nome=[txt(n) or r for n, r in zip(df.nome_fantasia, df.razao_social)],
+                     cnpj=df.cnpj.map(lambda c: fmt_cnpj(c) if txt(c) else ""))[list(LEAD_COLS)]
+    data = {"format": "DD/MM/YYYY"}
+    ev = st.dataframe(view, width="stretch", hide_index=True, on_select="rerun", selection_mode="multi-row",
+                      key=f"{key}_tbl_{st.session_state.get('crm_v', 0)}",
+                      column_config={**LEAD_COLS,
+                                     "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                                     "proximo_contato": st.column_config.DateColumn("Próximo contato", **data),
+                                     "ultimo_contato": st.column_config.DatetimeColumn("Último contato", **data),
+                                     "ultimo_retorno": st.column_config.DatetimeColumn("Último retorno", **data)})
+    rows = ev.selection.rows
+    if len(rows) == 1:
+        lead_detail(df.iloc[rows[0]], key)
+    elif rows:
+        acoes_em_massa(df.iloc[rows], key)
+    else:
+        st.caption("Selecione um lead para ver o histórico e registrar contatos, ou vários para agir em lote.")
+    downloads(view.rename(columns=LEAD_COLS), key)
+
+
+def acoes_em_massa(sel, key):
+    st.divider()
+    st.subheader(f"{len(sel)} leads selecionados")
+    c1, c2 = st.columns(2, gap="large")
+    with c1.form(f"{key}_lote_ativ"):
+        st.markdown("**Registrar atividade para todos**")
+        a, b = st.columns(2)
+        tipo = a.selectbox("Tipo", crm.TIPOS_ATIVIDADE, key=f"{key}_lt")
+        quando = b.date_input("Data", date.today(), format="DD/MM/YYYY", key=f"{key}_lq")
+        desc = st.text_input("Descrição", key=f"{key}_ld", placeholder="Ex.: mensagem de apresentação no WhatsApp")
+        retorno = st.checkbox("⬅ São retornos (eles responderam)", key=f"{key}_lr")
+        prox = st.date_input("Agendar próximo contato (opcional)", None, format="DD/MM/YYYY", key=f"{key}_lp")
+        if st.form_submit_button("Registrar para todos", type="primary"):
+            n = crm.registrar_em_massa(sel.id, tipo, desc or tipo,
+                                       datetime.now() if quando == date.today() else quando, retorno)
+            if prox:
+                for i in sel.id:
+                    crm.atualizar_lead(i, {"proximo_contato": prox})
+            crm_salvo(f"Atividade registrada em {len(sel)} leads" + (f" · {n} mudaram de etapa" if n else ""))
+    with c2.form(f"{key}_lote_mover"):
+        st.markdown("**Mover todos para outra etapa**")
+        etapa = st.selectbox("Etapa", crm.ETAPAS, key=f"{key}_le")
+        motivo = st.text_input("Motivo (se Perdido)", key=f"{key}_lm", placeholder="Sem interesse, fora do perfil...")
+        if st.form_submit_button("Mover"):
+            for i in sel.id:
+                crm.atualizar_lead(i, {"etapa": etapa, "motivo_perda": motivo} if etapa == crm.PERDIDO
+                                   else {"etapa": etapa})
+            crm_salvo(f"{len(sel)} leads movidos para {etapa}")
+
+
+def lead_detail(lead, key):
+    sfx = f"{key}_{lead.id}"
+    st.divider()
+    st.subheader(txt(lead.nome_fantasia) or lead.razao_social)
+    st.caption(" · ".join(x for x in [lead.razao_social if txt(lead.nome_fantasia) else "",
+                                      fmt_cnpj(lead.cnpj) if txt(lead.cnpj) else "", txt(lead.ramo),
+                                      f"origem: {lead.origem}" if txt(lead.origem) else "",
+                                      f"no CRM desde {lead.criado_em:%d/%m/%Y}"] if x))
+    seguinte = crm.ETAPAS[crm.ETAPAS.index(lead.etapa) + 1] if lead.etapa in crm.ETAPAS[:-2] else None
+    b1, b2, _ = st.columns([2, 2, 3])
+    b1.markdown(f"Etapa: **{lead.etapa}** ({lead.funil})")
+    if seguinte and b2.button(f"Avançar para {seguinte} →", key=f"av_{sfx}", type="primary"):
+        crm.atualizar_lead(lead.id, {"etapa": seguinte})
+        crm_salvo(f"Movido para {seguinte}")
+    c1, c2 = st.columns([3, 2], gap="large")
+    with c2:
+        with st.form(f"ativ_{sfx}"):
+            st.markdown("**Registrar contato / retorno**")
+            a, b = st.columns(2)
+            tipo = a.selectbox("Tipo", crm.TIPOS_ATIVIDADE, key=f"at_{sfx}")
+            quando = b.date_input("Data", date.today(), format="DD/MM/YYYY", key=f"aq_{sfx}")
+            retorno = st.checkbox("⬅ Foi o lead que respondeu / nos procurou", key=f"ar_{sfx}")
+            desc = st.text_area("O que aconteceu?", height=80, key=f"ad_{sfx}")
+            nova = st.date_input("Agendar próximo contato (opcional)", None, format="DD/MM/YYYY", key=f"an_{sfx}")
+            if st.form_submit_button("Registrar", type="primary"):
+                if not desc.strip():
+                    st.warning("Descreva o que aconteceu.")
+                else:
+                    etapa = crm.registrar_atividade(lead.id, tipo, desc,
+                                                    datetime.now() if quando == date.today() else quando, retorno)
+                    if nova:
+                        crm.atualizar_lead(lead.id, {"proximo_contato": nova})
+                    crm_salvo("Atividade registrada" + (f" · lead movido para {etapa}" if etapa else ""))
+        st.markdown("**Histórico**")
+        st.dataframe(crm.atividades(lead.id), width="stretch", hide_index=True,
+                     column_config={"data": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY HH:mm"),
+                                    "tipo": "Tipo", "sentido": "",
+                                    "descricao": st.column_config.TextColumn("Descrição", width="large")})
+    with c1.form(f"form_{sfx}"):
+        st.markdown("**Dados do lead**")
+        a, b = st.columns(2)
+        etapa = a.selectbox("Etapa", crm.ETAPAS, index=crm.ETAPAS.index(lead.etapa), key=f"et_{sfx}")
+        valor = b.number_input("Valor estimado (R$)", min_value=0.0, step=500.0, key=f"vl_{sfx}",
+                               value=float(lead.valor) if pd.notna(lead.valor) else 0.0)
+        contato = a.text_input("Pessoa de contato", txt(lead.contato), key=f"ct_{sfx}")
+        resp = b.text_input("Responsável", txt(lead.responsavel), key=f"rp_{sfx}")
+        tel = a.text_input("Telefone", txt(lead.telefone), key=f"tl_{sfx}")
+        email = b.text_input("E-mail", txt(lead.email), key=f"em_{sfx}")
+        prox = a.date_input("Próximo contato", lead.proximo_contato.date() if pd.notna(lead.proximo_contato) else None,
+                            format="DD/MM/YYYY", key=f"px_{sfx}")
+        motivo = b.text_input("Motivo da perda (se Perdido)", txt(lead.motivo_perda), key=f"mp_{sfx}")
+        obs = st.text_area("Observações", txt(lead.observacoes), key=f"ob_{sfx}")
+        if st.form_submit_button("💾 Salvar"):
+            crm.atualizar_lead(lead.id, dict(etapa=etapa, valor=valor or None, contato=contato, responsavel=resp,
+                                             telefone=tel, email=email, proximo_contato=prox,
+                                             motivo_perda=motivo, observacoes=obs))
+            crm_salvo("Lead atualizado")
+    with c1.expander("Excluir lead"):
+        if st.checkbox("Confirmo que quero excluir este lead e todo o histórico", key=f"dc_{sfx}") \
+                and st.button("Excluir", key=f"db_{sfx}"):
+            crm.excluir_lead(lead.id)
+            crm_salvo("Lead excluído")
+
+
 # ---------- layout ----------
 
 st.title("🏢 Consulta CNPJ")
@@ -406,7 +681,7 @@ if not DB.exists():
     st.stop()
 
 abas = st.tabs(["🎯 Prospecção", "🆕 Novos negócios", "📊 Estudo de mercado", "🔎 Consulta de empresa",
-                "🕸 Mapa societário"])
+                "🕸 Mapa societário", "💼 CRM"])
 with abas[0]:
     tab_prospeccao()
 with abas[1]:
@@ -417,4 +692,6 @@ with abas[3]:
     tab_consulta()
 with abas[4]:
     tab_socios()
+with abas[5]:
+    tab_crm()
 st.caption("Fonte: Dados Abertos do CNPJ — Receita Federal. Dados pessoais: use conforme a LGPD.")
